@@ -1,0 +1,434 @@
+privateclear all
+clc
+
+dados_altura = xlsread("dados_radiais.xlsx", 'Elevações', 'B:BU');
+%% close all
+%primeira radial
+% assumindo uma altura qualquer para a antena:
+% D1 + h, para o transmissor, e D201 + h para o receptor 
+%Assuindo que a antena trabalhe em 460Mhz
+
+f = 460e6;
+lambda = 299792458/f;   %em m 
+d_total = 100e3;
+t = 0:200;
+h_tx = 100;
+h_rx = 100;
+
+% Parâmetros para Potência e Campo Elétrico
+Pt_dBm = 30;    
+Gt_dBi = 2;     
+Gr_dBi = 2;     
+
+%correção das alturas com relação a curvatura da terra
+%considerando k = 4/3;
+r = 6378.1e3; %em m
+r_corrigido = 4/3* r;
+
+h_curva = ((t*500).^2)/ (2* r_corrigido);
+
+%%
+close all;
+Perdas_totais = [];
+
+for j = 1:72
+D = dados_altura(:,j)';  %em m
+
+%ajustando a altura do terreno
+D = D - h_curva;
+
+D_inicial = D(1,1) + h_tx;
+D_final = D(1,201) + h_rx;
+
+% traçando uma linha reta entre os dois:
+visada = linspace(D_inicial, D_final, 201);
+
+arestas = [];
+arestas_pos = [];
+
+for k = 2:200;
+    if(visada(k) < D(k) && k ~= 201) %terreno passa da visada
+        if(D(k) > D(k-1) && D(k) > D(k+1))
+            arestas = [arestas D(k)];
+            arestas_pos = [arestas_pos k-1];
+        end
+    end
+end
+
+%selecionando o método
+
+%verificando se há LOS
+LOS = false;
+LOS = all(visada >= D);
+
+% calculando alturas da primeira zona de fresnel
+h_fresnel = [];
+for k = 1:length(visada)
+    
+    h = sqrt(lambda* ((k-1)*500* (d_total - (k-1)*500))/ (d_total));
+    h_fresnel = [h_fresnel h];
+    
+end
+
+if (LOS == true)
+
+comp = 0;
+obstrucao = [];
+espacol = true;
+p_obstrucao = 0;
+pos = 0;
+
+for k = 1:length(visada)
+    if(visada(k) - D(k)) < 0.6* h_fresnel(k)
+        p_obstrucao = (h_fresnel(k) - (visada(k) - D(k)))/ (h_fresnel(k));
+        obstrucao = [obstrucao p_obstrucao];
+
+    else
+        obstrucao = [obstrucao 0];
+    end
+    
+    if p_obstrucao > 0.4
+        espacol = false; % possui obstrução de 60% ou mais da zona de fresnel
+        if(comp < p_obstrucao)
+            maior_p = (visada(k) - D(k));
+            pos = k;
+            comp = p_obstrucao;
+        end
+    end
+
+end
+
+if (espacol == false)
+    h = -maior_p;
+    
+    d1 = pos* 500;                      %em m
+    d2 = (200 - pos)* 500;         %em m
+    v = h* sqrt(2* (d1 + d2)/ (lambda*d1*d2));      %lambda deve estar em m
+
+    %perda por difração:
+    if (v > -0.8 && v < 0) L = -20* log10(0.5 - (0.62* v)); end
+    if (v > 0 && v < 1) L = -20* log10(0.5* exp(-0.95* v)); end
+    if (v > 1 && v < 2.4) L = -20* log10(0.4 - sqrt(0.1184 - (0.38 - 0.1*v)^2)); end
+    if (v > 2.4) L = -20* log10(0.225/ v); end    
+
+    Lt = 20* log10((4*pi* d_total)/ lambda) + L; %perda no espaço livre somada com a perda por difracao
+end
+
+if (espacol == true)
+
+ Lt = 20* log10((4*pi* d_total)/ lambda); %perda no espaço livre
+ 
+end
+
+Perdas_totais = [Perdas_totais Lt];
+
+end
+
+if LOS == false
+% Verificando Qual método utilizar
+metodo = '';
+
+if(length(arestas) == 1) metodo = 'difracao'; end 
+if(length(arestas) == 2) metodo = 'epstein_2'; end
+if(length(arestas) == 3) metodo = 'epstein_3'; end
+if(length(arestas) > 3) metodo = 'bullington'; end 
+
+if strcmp(metodo, 'difracao')
+    %Cálculo do v (parâmetro de Fresnel-Kirchoff)
+    L = 0;
+    
+    h = arestas(1) - visada(arestas_pos(1,1));
+    
+    d1 = length(visada(1,1:arestas_pos(1)))* 500;            %em m
+    d2 = (200 - (d1/500))* 500;                              %em m
+
+    v = h* sqrt(2* (d_total)/ (lambda*d1*d2));      %lambda deve estar em m
+
+
+    %perda por difração:
+    if (v > -0.8 && v < 0) L = -20* log10(0.5 - (0.62* v)); end
+    if (v > 0 && v < 1) L = -20* log10(0.5* exp(-0.95* v)); end
+    if (v > 1 && v < 2.4) L = -20* log10(0.4 - sqrt(0.1184 - (0.38 - 0.1*v)^2)); end
+    if (v > 2.4) L = -20* log10(0.225/ v); end    
+
+end
+
+if strcmp(metodo, 'epstein_2') 
+    L1 = 0;
+    L2 = 0;
+    L = 0;
+    
+    %Cálculo para a primeira aresta
+    
+    %comprimento da visada' entre o transmissor e a segunda aresta:
+    visada1 = linspace(D_inicial, arestas(2), length(visada(1,1:arestas_pos(2))));
+    d = length(visada1)*500;
+
+    h = arestas(1) - visada(arestas_pos(1));
+    d1 = length(visada1(1:arestas_pos(1)))* 500;     %em  m
+    d2 = (length(visada1) - (d1/500))* 500;                     %em  m
+
+    v = h* sqrt(2* (d_total)/ (lambda*d1*d2));      %lambda deve estar em m
+
+    %perda por difração:
+    if (v > -0.8 && v < 0) L1 = -20* log10(0.5 - (0.62* v)); end
+    if (v > 0 && v < 1) L1 = -20* log10(0.5* exp(-0.95* v)); end
+    if (v > 1 && v < 2.4) L1 = -20* log10(0.4 - sqrt(0.1184 - (0.38 - 0.1*v)^2)); end
+    if (v > 2.4) L1 = -20* log10(0.225/ v); end   
+
+
+    %Cálculo para a segunda aresta
+    visada2 = linspace(arestas(1), D_final, length(visada(1,arestas_pos(1):201)));
+    d = length(visada2)*500;
+
+    h = arestas(2) - visada2(1,arestas_pos(2)-arestas_pos(1));
+    d1 = length(visada2(1,1:arestas_pos(2)-arestas_pos(1)))* 500;     %em  m
+    d2 = (length(visada2) - (d1/500))* 500;                     %em  m
+
+    v = h* sqrt(2* (d_total)/ (lambda*d1*d2));      %lambda deve estar em m
+
+    %perda por difração:
+    if (v > -0.8 && v < 0) L2 = -20* log10(0.5 - (0.62* v)); end
+    if (v > 0 && v < 1) L2 = -20* log10(0.5* exp(-0.95* v)); end
+    if (v > 1 && v < 2.4) L2 = -20* log10(0.4 - sqrt(0.1184 - (0.38 - 0.1*v)^2)); end
+    if (v > 2.4) L2 = -20* log10(0.225/ v); end    
+
+
+    L = L1 + L2;
+
+end
+
+if strcmp(metodo, 'epstein_3')
+    L1 = 0;
+    L2 = 0;
+    L3 = 0;
+    L = 0;
+    
+    %Cálculo para a primeira aresta
+    
+    %comprimento da visada' entre o transmissor e a segunda aresta:
+    visada1 = linspace(D_inicial, arestas(2), length(visada(1,1:arestas_pos(2))));
+    d = length(visada1)*500;
+
+    h = arestas(1) - visada1(arestas_pos(1));
+    d1 = length(visada1(1:arestas_pos(1)))* 500;     %em  m
+    d2 = (length(visada1) - (d1/500))* 500;          %em  m
+
+    v = h* sqrt(2* (d_total)/ (lambda*d1*d2));      %lambda deve estar em m
+
+    %perda por difração:
+    if (v > -0.8 && v < 0) L1 = -20* log10(0.5 - (0.62* v)); end
+    if (v > 0 && v < 1) L1 = -20* log10(0.5* exp(-0.95* v)); end
+    if (v > 1 && v < 2.4) L1 = -20* log10(0.4 - sqrt(0.1184 - (0.38 - 0.1*v)^2)); end
+    if (v > 2.4) L1 = -20* log10(0.225/ v); end   
+
+
+    %Cálculo para a segunda aresta
+    visada2 = linspace(arestas(1), arestas(3), length(visada(1,arestas_pos(1):arestas_pos(3))));
+    d = length(visada2);
+
+    h = arestas(2) - visada2(1,arestas_pos(2)-arestas_pos(1));
+
+    d1 = length(visada2(1:arestas_pos(2)-arestas_pos(1)))* 500;     %em  m
+    d2 = (length(visada2) - (d1/500))* 500;                     %em  m
+
+    v = h* sqrt(2* (d1 + d2)/ (lambda*d1*d2));      %lambda deve estar em m
+
+    %perda por difração:
+    if (v > -0.8 && v < 0) L2 = -20* log10(0.5 - (0.62* v)); end
+    if (v > 0 && v < 1) L2 = -20* log10(0.5* exp(-0.95* v)); end
+    if (v > 1 && v < 2.4) L2 = -20* log10(0.4 - sqrt(0.1184 - (0.38 - 0.1*v)^2)); end
+    if (v > 2.4) L2 = -20* log10(0.225/ v); end      
+
+    %Cálculo para a terceira difração
+    visada3 = linspace(arestas(2), D_final, length(visada(1,arestas_pos(2):201)));
+    d = length(visada3)*500;
+
+    h = arestas(3) - visada3(1,arestas_pos(3)-arestas_pos(1));
+    d1 = length(visada3(1,1:arestas_pos(3)-arestas_pos(1)))* 500;     %em  m
+    d2 = (length(visada3) - (d1/500))* 500;                     %em  m
+
+    v = h* sqrt(2* (d_total)/ (lambda*d1*d2));      %lambda deve estar em m
+
+    %perda por difração:
+    if (v > -0.8 && v < 0) L3 = -20* log10(0.5 - (0.62* v)); end
+    if (v > 0 && v < 1) L3 = -20* log10(0.5* exp(-0.95* v)); end
+    if (v > 1 && v < 2.4) L3 = -20* log10(0.4 - sqrt(0.1184 - (0.38 - 0.1*v)^2)); end
+    if (v > 2.4) L3 = -20* log10(0.225/ v); end 
+
+
+
+    L = L1 + L2 + L3;
+end
+
+if strcmp(metodo, 'bullington')
+L1 = 0;
+L2 = 0;
+L3 = 0;
+beta = 0;
+beta1 = 0;
+primeiro_pico = 0;
+segundo_pico = 0;
+pos1 = 0;
+pos2 = 0;
+
+
+       for k = 1:length(arestas)
+        beta = (arestas(k) - visada(arestas_pos(k)+1))/(arestas_pos(k)*500);
+        if (beta > beta1) 
+            beta1 = beta; 
+            primeiro_pico = arestas(k);
+            pos1 = arestas_pos(k);
+        end % encontrando o maior angulo para o transmissor
+       end
+
+    for k = 1:length(arestas)
+        beta = (arestas(k) - visada(arestas_pos(k)))/ (200 - arestas_pos(k));
+     
+        if (beta > beta1) 
+            beta1 = beta; 
+            segundo_pico = arestas(k);
+            pos2 = arestas_pos(k);
+        end % encontrando o maior angulo para o transmissor
+    end 
+
+    if(pos1 == pos2)
+        h = primeiro_pico - visada(pos1);
+
+        d1 = pos1* 500;            %em m
+        d2 = (200 - pos1)* 500;    %em m
+
+        v = h* sqrt(2* (d_total)/ (lambda*d1*d2));      %lambda deve estar em m
+
+        %perda por difração:
+        if (v > -0.8 && v < 0) L = -20* log10(0.5 - (0.62* v)); end
+        if (v > 0 && v < 1) L = -20* log10(0.5* exp(-0.95* v)); end
+        if (v > 1 && v < 2.4) L = -20* log10(0.4 - sqrt(0.1184 - (0.38 - 0.1*v)^2)); end
+        if (v > 2.4) L = -20* log10(0.225/ v); end 
+
+    else
+    %calculando maior angulo para o transmissor e receptor:
+    paralela_t = D_inicial*ones(1,201);
+    paralela_r = D_final*ones(1,201);
+
+     if(D_inicial < D_final) % beta1 = beta_V - beta_A
+        beta_A = atan((primeiro_pico - paralela_t(pos1))/ (pos1*500));
+        beta_A2 = atan((segundo_pico - paralela_r(pos2))/ ((200 - pos2)*500));
+
+     else 
+     if(D_inicial > D_final) % beta1 = beta_V - beta_A
+        beta_A = atan(( primeiro_pico - paralela_t(pos1))/ (pos1*500));
+        beta_A2 = atan(( segundo_pico - paralela_r(pos2))/ ((200 - pos2)*500));
+     
+     end
+     
+     end
+ 
+    y = tan(beta_A)*t*500 + D_inicial; %reta para 
+    y2 = tan(beta_A2)*t*500 + D_final;
+    y2 = flip(y2);
+    
+    [~, pos_h] = min(abs(y - y2));
+    h1 = y(pos_h) - visada(pos_h);
+
+    %cálculo para a primeira aresta --> exatamente da linha da visada
+    L1 = 6;
+
+    %cálculo para a segunda aresta (virtual)
+    visada2 = linspace(primeiro_pico, segundo_pico, pos2-pos1);
+    
+    [~, pos_h] = min(abs(h1 - visada2));
+
+    h = h1;
+    d1 = (pos_h - primeiro_pico)* 500;                 %em  m
+    d2 = (segundo_pico - primeiro_pico)* 500;          %em  m
+
+    v = h* sqrt(2* (d_total)/ (lambda*d1*d2));      %lambda deve estar em m
+
+    %perda por difração:
+    if (v > -0.8 && v < 0) L2 = -20* log10(0.5 - (0.62* v)); end
+    if (v > 0 && v < 1) L2 = -20* log10(0.5* exp(-0.95* v)); end
+    if (v > 1 && v < 2.4) L2 = -20* log10(0.4 - sqrt(0.1184 - (0.38 - 0.1*v)^2)); end
+    if (v > 2.4) L2 = -20* log10(0.225/ v); end
+
+
+    %cálculo para a terceira aresta --> exatamente na linha da visada
+    L3 = 6;
+
+    L = L1 + L2 + L3;
+    end
+end
+
+Ltp = 10* log10((d_total^4)/((h_tx*h_rx)^2));
+Lb = 20* log10((4*pi* d_total)/ lambda);
+
+if(Lb > Ltp) Ladd = Lb;
+else Ladd = Ltp;
+end
+
+Lt = L + Ladd;
+
+Perdas_totais = [Perdas_totais Lt];
+end
+end
+
+
+hold on
+scatter(1:72, Perdas_totais, 100, Perdas_totais, 'filled')
+
+colormap(turbo);
+colorbar
+h = colorbar;
+ylabel(h, 'Perdas (dB)')
+
+xlabel('Número da Radial')
+ylabel('Perdas (dB)')
+title('Mapa de Calor das Perdas por Radial')
+xlim([0 73])
+grid on
+plot(1:72, Perdas_totais, 'k--', 'LineWidth', 0.5)
+set(gca, 'FontSize', 12)
+set(gcf, 'Color', 'w')
+
+% Visualização 2: Perfil do Terreno com Destaques
+figure;
+plot(t*500/1000, D, 'k', 'LineWidth', 2); hold on;
+plot(t*500/1000, visada, '--r', 'LineWidth', 1.5);
+plot(t*500/1000, visada - h_fresnel, ':b');
+plot(t*500/1000, visada + 0.6*h_fresnel, ':b');
+title(['Perfil de uma Radial']);
+xlabel('Distância (km)'); ylabel('Altura (m)');
+legend('Terreno', 'LOS', 'Zona Fresnel 60%', 'Location', 'northwest');
+grid on;
+
+% 1. Potência Recebida
+Pr_dBm = Pt_dBm + Gt_dBi + Gr_dBi - Perdas_totais;
+figure;
+hold on
+scatter(1:72, Pr_dBm, 100, Pr_dBm, 'filled');
+colormap(turbo);
+colorbar;
+title('Potência Recebida por Radial');
+xlabel('Número da Radial');
+ylabel('Potência (dBm)');
+grid on;
+plot(1:72, Pr_dBm, 'k--', 'LineWidth', 0.5)
+set(gca, 'FontSize', 12)
+set(gcf, 'Color', 'w')
+
+
+% 2. Intensidade de Campo
+E_dBuV = Pr_dBm + 20*log10(460) - 42.74;  % Fórmula ITU-R P.370
+
+figure;
+hold on
+scatter(1:72, E_dBuV, 100, E_dBuV, 'filled');
+colormap(turbo);
+colorbar;
+title('Intensidade de Campo Elétrico');
+xlabel('Número da Radial');
+ylabel('E (dBµV/m)');
+grid on;
+plot(1:72, E_dBuV, 'k--', 'LineWidth', 0.5)
+set(gca, 'FontSize', 12)
+set(gcf, 'Color', 'w')
